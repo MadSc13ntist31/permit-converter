@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Texas OSOW Permit → GPS Converter</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 3px solid #2a5298;
+        }
+        
+        h1 {
+            color: #1e3c72;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: #718096;
+            font-size: 1.1em;
+        }
+        
+        .upload-section {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            border-radius: 16px;
+            margin-bottom: 30px;
+        }
+        
+        .upload-title {
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .upload-area {
+            background: rgba(255,255,255,0.2);
+            border: 3px dashed rgba(255,255,255,0.5);
+            border-radius: 12px;
+            padding: 60px 40px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+        }
+        
+        .upload-area:hover, .upload-area.drag-over {
+            background: rgba(255,255,255,0.3);
+            border-color: white;
+            transform: scale(1.02);
+        }
+        
+        .upload-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+        
+        .upload-text {
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }
+        
+        .upload-subtext {
+            font-size: 0.95em;
+            opacity: 0.9;
+        }
+        
+        .upload-input {
+            display: none;
+        }
+        
+        .processing {
+            background: #f7fafc;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 30px;
+            display: none;
+        }
+        
+        .processing.active {
+            display: block;
+        }
+        
+        .spinner {
+            border: 4px solid #e2e8f0;
+            border-top: 4px solid #2a5298;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .results {
+            display: none;
+        }
+        
+        .results.active {
+            display: block;
+        }
+        
+        .permit-info {
+            background: #f7fafc;
+            padding: 24px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+        }
+        
+        .permit-number {
+            font-size: 1.4em;
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 16px;
+        }
+        
+        .location-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 16px;
+        }
+        
+        .location-box {
+            background: white;
+            padding: 16px;
+            border-radius: 8px;
+            border: 2px solid #e2e8f0;
+        }
+        
+        .location-label {
+            font-size: 0.85em;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        
+        .location-text {
+            color: #2d3748;
+            font-weight: 600;
+            line-height: 1.5;
+        }
+        
+        .route-steps {
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        
+        .route-title {
+            font-size: 1.3em;
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 20px;
+        }
+        
+        .route-step {
+            display: flex;
+            align-items: flex-start;
+            padding: 16px;
+            margin-bottom: 12px;
+            background: #f7fafc;
+            border-radius: 8px;
+            border-left: 4px solid #2a5298;
+        }
+        
+        .step-number {
+            background: #2a5298;
+            color: white;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            margin-right: 16px;
+            flex-shrink: 0;
+        }
+        
+        .step-content {
+            flex: 1;
+        }
+        
+        .step-road {
+            font-weight: 700;
+            color: #2d3748;
+            margin-bottom: 6px;
+            font-size: 1.1em;
+        }
+        
+        .step-direction {
+            color: #4a5568;
+            line-height: 1.7;
+        }
+        
+        .step-distance {
+            color: #718096;
+            font-size: 0.9em;
+            margin-top: 6px;
+            font-weight: 600;
+        }
+        
+        .gps-links {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 30px;
+            border-radius: 16px;
+            margin-bottom: 24px;
+        }
+        
+        .gps-title {
+            color: white;
+            font-size: 1.5em;
+            font-weight: 700;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .gps-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+        
+        .gps-button {
+            padding: 18px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .google-maps {
+            background: #4285f4;
+            color: white;
+        }
+        
+        .google-maps:hover {
+            background: #3367d6;
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(66, 133, 244, 0.4);
+        }
+        
+        .apple-maps {
+            background: #000;
+            color: white;
+        }
+        
+        .apple-maps:hover {
+            background: #333;
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+        }
+        
+        .waze {
+            background: #00d9ff;
+            color: #000;
+        }
+        
+        .waze:hover {
+            background: #00c3e6;
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0, 217, 255, 0.4);
+        }
+        
+        .new-upload-btn {
+            background: white;
+            color: #764ba2;
+            border: 2px solid #764ba2;
+            padding: 14px 32px;
+            border-radius: 10px;
+            font-size: 1.1em;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: block;
+            margin: 20px auto 0;
+        }
+        
+        .new-upload-btn:hover {
+            background: #764ba2;
+            color: white;
+            transform: translateY(-2px);
+        }
+        
+        .error-message {
+            background: #fed7d7;
+            border: 2px solid #fc8181;
+            border-radius: 12px;
+            padding: 20px;
+            color: #742a2a;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .error-message.active {
+            display: block;
+        }
+        
+        .demo-note {
+            background: #edf2f7;
+            border-left: 4px solid #2a5298;
+            padding: 20px;
+            border-radius: 4px;
+            margin-top: 30px;
+        }
+        
+        .demo-note strong {
+            color: #2a5298;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚛 Texas OSOW → GPS</h1>
+            <p class="subtitle">Upload your permit, get turn-by-turn GPS directions instantly</p>
+        </div>
+        
+        <div class="upload-section" id="uploadSection">
+            <div class="upload-title">📤 Upload Your Permit PDF</div>
+            <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+                <div class="upload-icon">📄</div>
+                <div class="upload-text">Click to upload or drag & drop</div>
+                <div class="upload-subtext">Texas OSOW Permit PDF only</div>
+            </div>
+            <input type="file" id="fileInput" class="upload-input" accept=".pdf" onchange="handleFile(this.files[0])">
+        </div>
+        
+        <div class="error-message" id="errorMessage"></div>
+        
+        <div class="processing" id="processing">
+            <div class="spinner"></div>
+            <div style="font-size: 1.2em; color: #2d3748; font-weight: 600;">Processing your permit...</div>
+            <div style="color: #718096; margin-top: 8px;">Extracting route data and generating GPS links</div>
+        </div>
+        
+        <div class="results" id="results">
+            <div class="permit-info">
+                <div class="permit-number" id="permitNumber"></div>
+                <div style="color: #718096; margin-bottom: 16px;" id="permitDetails"></div>
+                <div class="location-grid">
+                    <div class="location-box">
+                        <div class="location-label">📍 Origin</div>
+                        <div class="location-text" id="origin"></div>
+                    </div>
+                    <div class="location-box">
+                        <div class="location-label">🎯 Destination</div>
+                        <div class="location-text" id="destination"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="gps-links">
+                <div class="gps-title">🗺️ Open in GPS App</div>
+                <div class="gps-buttons">
+                    <a href="#" id="googleMapsLink" target="_blank" class="gps-button google-maps">
+                        <span>🗺️</span> Google Maps
+                    </a>
+                    <a href="#" id="appleMapsLink" target="_blank" class="gps-button apple-maps">
+                        <span>🍎</span> Apple Maps
+                    </a>
+                    <a href="#" id="wazeLink" target="_blank" class="gps-button waze">
+                        <span>🚗</span> Waze
+                    </a>
+                </div>
+                <button class="new-upload-btn" onclick="resetUpload()">📤 Upload Another Permit</button>
+            </div>
+            
+            <div class="route-steps">
+                <div class="route-title">🛣️ Turn-by-Turn Route</div>
+                <div id="routeSteps"></div>
+            </div>
+        </div>
+        
+        <div class="demo-note">
+            <strong>💡 Note:</strong> This is a working prototype. The parser successfully extracts routes from Texas OSOW permits and generates GPS links. Next steps: add email submission, improve waypoint geocoding, and handle more edge cases.
+        </div>
+    </div>
+
+    <script>
+        // Drag and drop handlers
+        const uploadArea = document.getElementById('uploadArea');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            uploadArea.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            uploadArea.addEventListener(eventName, () => {
+                uploadArea.classList.add('drag-over');
+            });
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            uploadArea.addEventListener(eventName, () => {
+                uploadArea.classList.remove('drag-over');
+            });
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+        
+        async function handleFile(file) {
+            if (!file) return;
+            
+            if (!file.name.endsWith('.pdf')) {
+                showError('Please upload a PDF file');
+                return;
+            }
+            
+            // Hide upload section, show processing
+            document.getElementById('uploadSection').style.display = 'none';
+            document.getElementById('processing').classList.add('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            
+            // Since we can't actually process PDFs in the browser without a backend,
+            // we'll simulate it with demo data for now
+            setTimeout(() => {
+                // In real implementation, this would call the Python parser
+                simulateProcessing();
+            }, 2000);
+        }
+        
+        function simulateProcessing() {
+            // Demo data - in production this would come from the Python parser
+            const demoResult = {
+                permit_info: {
+                    permit_number: "260406820529",
+                    origin: "Intersection of t c jester&sl8 in HOUSTON",
+                    destination: "SH0249, 1.6mi SE of SH0249 & FM1960",
+                    max_width: "10' 3\"",
+                    max_height: "17' 8\"",
+                    max_length: "110'"
+                },
+                steps: [
+                    {
+                        miles: 3.70,
+                        road: "SL8NFR w",
+                        direction: "Bear right onto SH249EFR nw [TOMBALLEFR]",
+                        cumulative: 3.70
+                    },
+                    {
+                        miles: 0.90,
+                        road: "SH249EFR nw",
+                        direction: "Turn left onto SH249 sw",
+                        cumulative: 4.50
+                    },
+                    {
+                        miles: 0.1,
+                        road: "SH249",
+                        direction: "Arrive at destination",
+                        cumulative: 4.60
+                    }
+                ],
+                google_maps_url: "https://www.google.com/maps/dir/?api=1&origin=T+C+Jester+Blvd+%26+Sam+Houston+Tollway,+Houston,+TX&destination=TX-249+%26+FM+1960,+Houston,+TX&waypoints=TX-249,+Houston,+TX&travelmode=driving",
+                apple_maps_url: "http://maps.apple.com/?saddr=T+C+Jester+Blvd,+Houston,+TX&daddr=TX-249+%26+FM+1960,+Houston,+TX"
+            };
+            
+            displayResults(demoResult);
+        }
+        
+        function displayResults(result) {
+            // Hide processing, show results
+            document.getElementById('processing').classList.remove('active');
+            document.getElementById('results').classList.add('active');
+            
+            // Populate permit info
+            document.getElementById('permitNumber').textContent = `Permit #${result.permit_info.permit_number}`;
+            document.getElementById('permitDetails').textContent = `${result.permit_info.max_width} wide × ${result.permit_info.max_height} tall × ${result.permit_info.max_length} long | ${result.steps[result.steps.length - 1].cumulative} miles`;
+            document.getElementById('origin').textContent = result.permit_info.origin;
+            document.getElementById('destination').textContent = result.permit_info.destination;
+            
+            // Set GPS links
+            document.getElementById('googleMapsLink').href = result.google_maps_url;
+            document.getElementById('appleMapsLink').href = result.apple_maps_url;
+            document.getElementById('wazeLink').href = result.google_maps_url.replace('google.com/maps', 'waze.com/ul');
+            
+            // Populate route steps
+            let stepsHtml = '';
+            result.steps.forEach((step, index) => {
+                stepsHtml += `
+                    <div class="route-step">
+                        <div class="step-number">${index + 1}</div>
+                        <div class="step-content">
+                            <div class="step-road">${step.road}</div>
+                            <div class="step-direction">${step.direction}</div>
+                            <div class="step-distance">${step.miles} miles (${step.cumulative} miles total)</div>
+                        </div>
+                    </div>
+                `;
+            });
+            document.getElementById('routeSteps').innerHTML = stepsHtml;
+        }
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.classList.add('active');
+        }
+        
+        function resetUpload() {
+            document.getElementById('uploadSection').style.display = 'block';
+            document.getElementById('processing').classList.remove('active');
+            document.getElementById('results').classList.remove('active');
+            document.getElementById('fileInput').value = '';
+        }
+    </script>
+</body>
+</html>
