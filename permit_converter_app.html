@@ -465,50 +465,31 @@
             document.getElementById('processing').classList.add('active');
             document.getElementById('errorMessage').classList.remove('active');
             
-            // Since we can't actually process PDFs in the browser without a backend,
-            // we'll simulate it with demo data for now
-            setTimeout(() => {
-                // In real implementation, this would call the Python parser
-                simulateProcessing();
-            }, 2000);
-        }
-        
-        function simulateProcessing() {
-            // Demo data - in production this would come from the Python parser
-            const demoResult = {
-                permit_info: {
-                    permit_number: "260406820529",
-                    origin: "Intersection of t c jester&sl8 in HOUSTON",
-                    destination: "SH0249, 1.6mi SE of SH0249 & FM1960",
-                    max_width: "10' 3\"",
-                    max_height: "17' 8\"",
-                    max_length: "110'"
-                },
-                steps: [
-                    {
-                        miles: 3.70,
-                        road: "SL8NFR w",
-                        direction: "Bear right onto SH249EFR nw [TOMBALLEFR]",
-                        cumulative: 3.70
-                    },
-                    {
-                        miles: 0.90,
-                        road: "SH249EFR nw",
-                        direction: "Turn left onto SH249 sw",
-                        cumulative: 4.50
-                    },
-                    {
-                        miles: 0.1,
-                        road: "SH249",
-                        direction: "Arrive at destination",
-                        cumulative: 4.60
-                    }
-                ],
-                google_maps_url: "https://www.google.com/maps/dir/?api=1&origin=T+C+Jester+Blvd+%26+Sam+Houston+Tollway,+Houston,+TX&destination=TX-249+%26+FM+1960,+Houston,+TX&waypoints=TX-249,+Houston,+TX&travelmode=driving",
-                apple_maps_url: "http://maps.apple.com/?saddr=T+C+Jester+Blvd,+Houston,+TX&daddr=TX-249+%26+FM+1960,+Houston,+TX"
-            };
-            
-            displayResults(demoResult);
+            try {
+                // Create form data
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                // Call API
+                const response = await fetch('/api/parse-permit', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to parse permit');
+                }
+                
+                const result = await response.json();
+                displayResults(result);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('processing').classList.remove('active');
+                document.getElementById('uploadSection').style.display = 'block';
+                showError(error.message || 'Failed to process permit. Please try again.');
+            }
         }
         
         function displayResults(result) {
@@ -517,8 +498,13 @@
             document.getElementById('results').classList.add('active');
             
             // Populate permit info
+            const width = result.permit_info.max_width || 'N/A';
+            const height = result.permit_info.max_height || 'N/A';
+            const length = result.permit_info.max_length || 'N/A';
+            const totalMiles = result.steps && result.steps.length > 0 ? result.steps[result.steps.length - 1].cumulative : 'N/A';
+            
             document.getElementById('permitNumber').textContent = `Permit #${result.permit_info.permit_number}`;
-            document.getElementById('permitDetails').textContent = `${result.permit_info.max_width} wide × ${result.permit_info.max_height} tall × ${result.permit_info.max_length} long | ${result.steps[result.steps.length - 1].cumulative} miles`;
+            document.getElementById('permitDetails').textContent = `${width} wide × ${height} tall × ${length} long | ${totalMiles} miles`;
             document.getElementById('origin').textContent = result.permit_info.origin;
             document.getElementById('destination').textContent = result.permit_info.destination;
             
@@ -551,9 +537,23 @@
         }
         
         function resetUpload() {
+            // Clear all displayed data
+            document.getElementById('permitNumber').textContent = '';
+            document.getElementById('permitDetails').textContent = '';
+            document.getElementById('origin').textContent = '';
+            document.getElementById('destination').textContent = '';
+            document.getElementById('routeSteps').innerHTML = '';
+            document.getElementById('googleMapsLink').href = '#';
+            document.getElementById('appleMapsLink').href = '#';
+            document.getElementById('wazeLink').href = '#';
+            
+            // Reset visibility
             document.getElementById('uploadSection').style.display = 'block';
             document.getElementById('processing').classList.remove('active');
             document.getElementById('results').classList.remove('active');
+            document.getElementById('errorMessage').classList.remove('active');
+            
+            // Clear file input
             document.getElementById('fileInput').value = '';
         }
     </script>
