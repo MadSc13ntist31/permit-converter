@@ -152,6 +152,48 @@ def extract_location_from_direction(direction: str, road: str) -> Optional[str]:
     
     return None
 
+def clean_location_for_maps(location: str) -> str:
+    """Convert permit location descriptions to Google Maps-friendly addresses"""
+    
+    # Remove common permit jargon
+    location = location.replace('Intersection of ', '')
+    location = location.replace('in HOUSTON', ', Houston, TX')
+    location = location.replace('in LAKE JACKSON', ', Lake Jackson, TX')
+    location = location.replace('in ANGLETON', ', Angleton, TX')
+    
+    # Expand common abbreviations
+    location = location.replace('&', ' and ')
+    location = location.replace('sl8', 'Sam Houston Tollway')
+    location = location.replace('SL8', 'Sam Houston Tollway')
+    location = location.replace('t c jester', 'TC Jester Blvd')
+    location = location.replace('T C Jester', 'TC Jester Blvd')
+    
+    # Fix common street name patterns
+    location = re.sub(r'\bfm\s*(\d+)', r'FM \1', location, flags=re.IGNORECASE)
+    location = re.sub(r'\bsh\s*(\d+)', r'TX-\1', location, flags=re.IGNORECASE)
+    location = re.sub(r'\bus\s*(\d+)', r'US-\1', location, flags=re.IGNORECASE)
+    location = re.sub(r'\bih\s*(\d+)', r'I-\1', location, flags=re.IGNORECASE)
+    
+    # Handle distance-based locations (e.g., "1.6mi SE of SH0249 & FM1960")
+    # Convert to intersection for better Google Maps recognition
+    distance_match = re.search(r'(\d+\.?\d*)\s*mi\s+([NSEW]{1,2})\s+of\s+(.+)', location)
+    if distance_match:
+        # For now, just use the intersection part - more accurate than offset distance
+        intersection_part = distance_match.group(3)
+        location = intersection_part
+        # Clean up the intersection
+        location = location.replace('0249', '249').replace('1960', '1960')
+        location = re.sub(r'(TX-\d+)\s+and\s+(FM\s+\d+)', r'\1 & \2', location)
+    
+    # Clean up multiple spaces
+    location = re.sub(r'\s+', ' ', location).strip()
+    
+    # If no city mentioned, add TX
+    if ', TX' not in location and 'Texas' not in location:
+        location = location + ', TX'
+    
+    return location
+
 def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
     """Generate GPS waypoints from route steps"""
     waypoints = []
@@ -159,13 +201,8 @@ def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
     # Add origin
     origin = permit_info.get('origin', '')
     if origin:
-        # Try to make it more specific
-        if 'HOUSTON' in origin.upper():
-            waypoints.append(origin.replace('in HOUSTON', ', Houston, TX'))
-        elif 'LAKE JACKSON' in origin.upper():
-            waypoints.append(origin.replace('in LAKE JACKSON', ', Lake Jackson, TX'))
-        else:
-            waypoints.append(origin + ', TX')
+        clean_origin = clean_location_for_maps(origin)
+        waypoints.append(clean_origin)
     
     # Add key waypoints from major highway changes
     major_highways = []
@@ -187,12 +224,8 @@ def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
     # Add destination
     destination = permit_info.get('destination', '')
     if destination:
-        if 'HOUSTON' in destination.upper():
-            waypoints.append(destination.replace('in HOUSTON', ', Houston, TX'))
-        elif 'LAKE JACKSON' in destination.upper():
-            waypoints.append(destination.replace('in LAKE JACKSON', ', Lake Jackson, TX'))
-        else:
-            waypoints.append(destination + ', TX')
+        clean_dest = clean_location_for_maps(destination)
+        waypoints.append(clean_dest)
     
     return waypoints
 
