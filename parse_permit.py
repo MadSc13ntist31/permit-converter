@@ -122,7 +122,7 @@ def parse_route_table(text: str) -> List[Dict]:
 
 def normalize_road_name(road: str) -> str:
     """Convert abbreviated road names to full names"""
-    # Remove directional suffixes
+    # Remove directional suffixes first
     road = re.sub(r'\s+(nw|ne|sw|se|n|s|e|w)$', '', road, flags=re.IGNORECASE)
     
     # Convert abbreviations
@@ -130,8 +130,17 @@ def normalize_road_name(road: str) -> str:
     road = re.sub(r'^SH', 'TX-', road)
     road = re.sub(r'^US', 'US-', road)
     road = re.sub(r'^FM', 'FM ', road)
-    road = re.sub(r'EFR$', ' Frontage Road', road)
-    road = re.sub(r'NFR$', ' Frontage Road', road)
+    
+    # Handle frontage roads - keep them but format better for Google Maps
+    # Note: Frontage roads are REQUIRED by permit, must be in route
+    if 'WFR' in road.upper():
+        road = re.sub(r'WFR$', ' West Frontage Rd', road, flags=re.IGNORECASE)
+    elif 'EFR' in road.upper():
+        road = re.sub(r'EFR$', ' East Frontage Rd', road, flags=re.IGNORECASE)
+    elif 'NFR' in road.upper():
+        road = re.sub(r'NFR$', ' North Frontage Rd', road, flags=re.IGNORECASE)
+    elif 'SFR' in road.upper():
+        road = re.sub(r'SFR$', ' South Frontage Rd', road, flags=re.IGNORECASE)
     
     return road.strip()
 
@@ -139,16 +148,21 @@ def extract_location_from_direction(direction: str, road: str) -> Optional[str]:
     """Try to extract a usable location from direction text"""
     # Look for city names
     cities = ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Freeport', 
-              'Tomball', 'Rosharon', 'Alvin', 'Pearland']
+              'Tomball', 'Rosharon', 'Alvin', 'Pearland', 'Clute', 'Galveston',
+              'Pasadena', 'Sugar Land', 'Katy', 'Spring', 'Conroe']
     
     for city in cities:
         if city.lower() in direction.lower():
-            return f"{normalize_road_name(road)}, {city}, TX"
+            # Keep frontage roads as-is - they're required by permit
+            clean_road = normalize_road_name(road)
+            return f"{clean_road}, {city}, TX"
     
-    # Look for highway intersections
+    # Look for highway intersections in the direction
     highway_match = re.search(r'(IH|SH|US|FM)[\s-]?(\d+)', direction)
     if highway_match:
-        return f"{normalize_road_name(road)}, TX"
+        clean_road = normalize_road_name(road)
+        # Keep frontage roads in the waypoint - they're legally required
+        return f"{clean_road}, TX"
     
     return None
 
@@ -195,7 +209,7 @@ def clean_location_for_maps(location: str) -> str:
     return location
 
 def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
-    """Generate GPS waypoints from route steps"""
+    """Generate GPS waypoints from route steps - MUST include ALL steps for permit compliance"""
     waypoints = []
     
     # Add origin
@@ -204,28 +218,44 @@ def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
         clean_origin = clean_location_for_maps(origin)
         waypoints.append(clean_origin)
     
-    # Add key waypoints from major highway changes
-    major_highways = []
-    last_major_road = None
+    # Add waypoints for EVERY significant road change
+    # Permits require exact route compliance - cannot skip any step
+    last_road = None
     
     for step in steps:
         road = step['road']
         direction = step['direction']
         
-        # Identify major highways (IH, US, major SH)
-        if any(x in road.upper() for x in ['IH', 'US69', 'SH288', 'SH249', 'SH36']):
-            if road != last_major_road:
-                location = extract_location_from_direction(direction, road)
-                if location:
-                    waypoints.append(location)
-                    major_highways.append(road)
-                last_major_road = road
+        # Normalize the road name for comparison
+        normalized_road = normalize_road_name(road)
+        
+        # Skip if it's the same road as last waypoint
+        if normalized_road == last_road:
+            continue
+        
+        # Add waypoint for this road segment
+        location = extract_location_from_direction(direction, road)
+        if location:
+            waypoints.append(location)
+            last_road = normalized_road
     
     # Add destination
     destination = permit_info.get('destination', '')
     if destination:
         clean_dest = clean_location_for_maps(destination)
         waypoints.append(clean_dest)
+    
+    # Google Maps has a 10 waypoint limit, so if we have more, keep first, last, and evenly distribute middle
+    if len(waypoints) > 10:
+        first = waypoints[0]
+        last = waypoints[-1]
+        middle = waypoints[1:-1]
+        
+        # Keep every Nth waypoint to stay under limit
+        step_size = len(middle) // 8  # Keep 8 middle waypoints
+        selected_middle = [middle[i] for i in range(0, len(middle), max(1, step_size))][:8]
+        
+        waypoints = [first] + selected_middle + [last]
     
     return waypoints
 
