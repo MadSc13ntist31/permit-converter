@@ -208,8 +208,98 @@ def clean_location_for_maps(location: str) -> str:
     
     return location
 
+def extract_specific_location_from_step(step: Dict) -> Optional[str]:
+    """Extract the most specific location from a route step for GPS waypoint"""
+    direction = step['direction']
+    road = step['road']
+    
+    # Look for specific street names, exits, or intersections mentioned in directions
+    
+    # Pattern 1: "onto STREET NAME"
+    onto_match = re.search(r'onto\s+([A-Z][A-Z\s\d]+?)(?:\s+[nsew]{1,2}(?:\s|$)|\s*\[|$)', direction, re.IGNORECASE)
+    if onto_match:
+        street = onto_match.group(1).strip()
+        # Clean up the street name
+        street = clean_location_for_maps(street)
+        return street
+    
+    # Pattern 2: "Exit toward PLACE/STREET"
+    exit_match = re.search(r'(?:exit|take exit)\s+(?:toward\s+)?([A-Z][A-Za-z\s\d./\-]+?)(?:\s*$|;)', direction, re.IGNORECASE)
+    if exit_match:
+        destination = exit_match.group(1).strip()
+        # Extract city or street name
+        if '/' in destination:
+            destination = destination.split('/')[0].strip()
+        destination = clean_location_for_maps(destination)
+        return destination
+    
+    # Pattern 3: Merge onto HIGHWAY
+    merge_match = re.search(r'(?:merge|continue)\s+(?:onto|on)\s+([A-Z\d]+)', direction, re.IGNORECASE)
+    if merge_match:
+        highway = merge_match.group(1).strip()
+        # Look for city name in direction
+        cities = ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Freeport', 
+                  'Tomball', 'Rosharon', 'Alvin', 'Pearland', 'Clute']
+        for city in cities:
+            if city.lower() in direction.lower():
+                highway = normalize_road_name(highway)
+                return f"{highway}, {city}, TX"
+        highway = normalize_road_name(highway)
+        return f"{highway}, TX"
+    
+    # Pattern 4: Keep left/right toward DESTINATION
+    toward_match = re.search(r'(?:keep|bear)\s+(?:left|right)\s+(?:for|toward)\s+([A-Z][A-Za-z\s\d/\-]+?)(?:\s*$|;)', direction, re.IGNORECASE)
+    if toward_match:
+        destination = toward_match.group(1).strip()
+        if '/' in destination:
+            destination = destination.split('/')[0].strip()
+        destination = clean_location_for_maps(destination)
+        return destination
+    
+    # Pattern 5: Turn onto street
+    turn_match = re.search(r'(?:turn|bear)\s+(?:left|right)\s+onto\s+([A-Z][A-Za-z\s\d]+)', direction, re.IGNORECASE)
+    if turn_match:
+        street = turn_match.group(1).strip()
+        street = clean_location_for_maps(street)
+        return street
+    
+    return None
+
+def add_city_context_to_waypoints(waypoints: List[str], permit_info: Dict) -> List[str]:
+    """Add city names to waypoints that don't have them for better Google Maps recognition"""
+    improved_waypoints = []
+    
+    # Determine likely cities from origin/destination
+    origin = permit_info.get('origin', '')
+    destination = permit_info.get('destination', '')
+    
+    cities_mentioned = []
+    for text in [origin, destination]:
+        for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Freeport', 
+                      'Tomball', 'Rosharon', 'Alvin', 'Pearland', 'Clute', 'Galveston']:
+            if city.lower() in text.lower():
+                cities_mentioned.append(city)
+    
+    # Default to first mentioned city if available
+    default_city = cities_mentioned[0] if cities_mentioned else None
+    
+    for waypoint in waypoints:
+        # If waypoint already has a city, keep it
+        if any(city in waypoint for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 
+                                               'Freeport', 'Tomball', 'Clute', 'Galveston']):
+            improved_waypoints.append(waypoint)
+        # If it's just a highway with ", TX", add city if we know it
+        elif waypoint.endswith(', TX') and default_city and not any(x in waypoint for x in ['Dr', 'St', 'Ave', 'Blvd', 'Drive', 'Street']):
+            # For highways, adding city helps Google Maps
+            waypoint_with_city = waypoint.replace(', TX', f', {default_city}, TX')
+            improved_waypoints.append(waypoint_with_city)
+        else:
+            improved_waypoints.append(waypoint)
+    
+    return improved_waypoints
+
 def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
-    """Generate GPS waypoints from route steps - MUST include ALL steps for permit compliance"""
+    """Generate GPS waypoints from route steps - using specific turn locations"""
     waypoints = []
     
     # Add origin
@@ -218,26 +308,19 @@ def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
         clean_origin = clean_location_for_maps(origin)
         waypoints.append(clean_origin)
     
-    # Add waypoints for EVERY significant road change
-    # Permits require exact route compliance - cannot skip any step
-    last_road = None
-    
+    # Extract specific locations from each turn/direction change
     for step in steps:
-        road = step['road']
-        direction = step['direction']
-        
-        # Normalize the road name for comparison
-        normalized_road = normalize_road_name(road)
-        
-        # Skip if it's the same road as last waypoint
-        if normalized_road == last_road:
+        # Skip "arrive at destination" steps
+        if 'arrive' in step['direction'].lower():
             continue
         
-        # Add waypoint for this road segment
-        location = extract_location_from_direction(direction, road)
+        # Get specific location from this step
+        location = extract_specific_location_from_step(step)
+        
         if location:
-            waypoints.append(location)
-            last_road = normalized_road
+            # Avoid duplicate consecutive waypoints
+            if not waypoints or location != waypoints[-1]:
+                waypoints.append(location)
     
     # Add destination
     destination = permit_info.get('destination', '')
@@ -245,15 +328,19 @@ def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
         clean_dest = clean_location_for_maps(destination)
         waypoints.append(clean_dest)
     
-    # Google Maps has a 10 waypoint limit, so if we have more, keep first, last, and evenly distribute middle
-    if len(waypoints) > 10:
+    # Add city context to improve Google Maps recognition
+    waypoints = add_city_context_to_waypoints(waypoints, permit_info)
+    
+    # Google Maps has a 10 waypoint limit (9 waypoints + origin + destination = 11 total points)
+    # So we can use 9 intermediate waypoints
+    if len(waypoints) > 11:
         first = waypoints[0]
         last = waypoints[-1]
         middle = waypoints[1:-1]
         
-        # Keep every Nth waypoint to stay under limit
-        step_size = len(middle) // 8  # Keep 8 middle waypoints
-        selected_middle = [middle[i] for i in range(0, len(middle), max(1, step_size))][:8]
+        # Keep evenly distributed waypoints
+        step_size = max(1, len(middle) // 9)
+        selected_middle = [middle[i] for i in range(0, len(middle), step_size)][:9]
         
         waypoints = [first] + selected_middle + [last]
     
