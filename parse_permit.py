@@ -209,59 +209,57 @@ def clean_location_for_maps(location: str) -> str:
     return location
 
 def extract_specific_location_from_step(step: Dict) -> Optional[str]:
-    """Extract the most specific location from a route step for GPS waypoint"""
+    """Extract waypoint from permit direction - use the actual turn description"""
     direction = step['direction']
-    road = step['road']
     
-    # Look for specific street names, exits, or intersections mentioned in directions
+    # The direction text itself is the best waypoint - it tells you WHERE to go
+    # Examples:
+    #   "Bear right onto SH249EFR nw [TOMBALLEFR]" 
+    #   → "TX-249 Frontage Rd, Tomball, TX"
     
-    # Pattern 1: "onto STREET NAME"
-    onto_match = re.search(r'onto\s+([A-Z][A-Z\s\d]+?)(?:\s+[nsew]{1,2}(?:\s|$)|\s*\[|$)', direction, re.IGNORECASE)
+    # Pattern 1: "onto ROAD [LOCATION]" - this is a specific turn
+    onto_match = re.search(r'onto\s+([A-Z0-9]+[A-Za-z]*)\s+[nsew]{1,2}\s*\[([A-Z]+)\]', direction, re.IGNORECASE)
     if onto_match:
-        street = onto_match.group(1).strip()
-        # Clean up the street name
-        street = clean_location_for_maps(street)
-        return street
+        road = onto_match.group(1)
+        location = onto_match.group(2)
+        # Clean up location - remove EFR/WFR/etc suffixes
+        location = re.sub(r'(EFR|WFR|NFR|SFR)$', '', location, flags=re.IGNORECASE)
+        # Clean up road name
+        road_clean = normalize_road_name(road)
+        location_clean = location.title()
+        return f"{road_clean}, {location_clean}, TX"
     
-    # Pattern 2: "Exit toward PLACE/STREET"
-    exit_match = re.search(r'(?:exit|take exit)\s+(?:toward\s+)?([A-Z][A-Za-z\s\d./\-]+?)(?:\s*$|;)', direction, re.IGNORECASE)
-    if exit_match:
-        destination = exit_match.group(1).strip()
-        # Extract city or street name
-        if '/' in destination:
-            destination = destination.split('/')[0].strip()
-        destination = clean_location_for_maps(destination)
-        return destination
-    
-    # Pattern 3: Merge onto HIGHWAY
-    merge_match = re.search(r'(?:merge|continue)\s+(?:onto|on)\s+([A-Z\d]+)', direction, re.IGNORECASE)
-    if merge_match:
-        highway = merge_match.group(1).strip()
-        # Look for city name in direction
-        cities = ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Freeport', 
-                  'Tomball', 'Rosharon', 'Alvin', 'Pearland', 'Clute']
-        for city in cities:
+    # Pattern 2: "onto ROAD" (without location)
+    onto_simple = re.search(r'(?:onto|on)\s+([A-Z][A-Z0-9\s]+?)(?:\s+[nsew]{1,2}|$)', direction, re.IGNORECASE)
+    if onto_simple:
+        road = onto_simple.group(1).strip()
+        road_clean = normalize_road_name(road)
+        # Add any city mentioned in the direction
+        for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Tomball', 'Clute']:
             if city.lower() in direction.lower():
-                highway = normalize_road_name(highway)
-                return f"{highway}, {city}, TX"
-        highway = normalize_road_name(highway)
-        return f"{highway}, TX"
+                return f"{road_clean}, {city}, TX"
+        return f"{road_clean}, TX"
     
-    # Pattern 4: Keep left/right toward DESTINATION
-    toward_match = re.search(r'(?:keep|bear)\s+(?:left|right)\s+(?:for|toward)\s+([A-Z][A-Za-z\s\d/\-]+?)(?:\s*$|;)', direction, re.IGNORECASE)
+    # Pattern 3: "toward DESTINATION" - use the destination
+    toward_match = re.search(r'toward\s+([A-Z][A-Za-z\s\d/\-]+?)(?:/|;|$)', direction, re.IGNORECASE)
     if toward_match:
-        destination = toward_match.group(1).strip()
-        if '/' in destination:
-            destination = destination.split('/')[0].strip()
-        destination = clean_location_for_maps(destination)
-        return destination
+        dest = toward_match.group(1).strip()
+        # If it has a slash, take first part
+        if '/' in dest:
+            dest = dest.split('/')[0].strip()
+        dest_clean = clean_location_for_maps(dest)
+        return dest_clean
     
-    # Pattern 5: Turn onto street
-    turn_match = re.search(r'(?:turn|bear)\s+(?:left|right)\s+onto\s+([A-Z][A-Za-z\s\d]+)', direction, re.IGNORECASE)
-    if turn_match:
-        street = turn_match.group(1).strip()
-        street = clean_location_for_maps(street)
-        return street
+    # Pattern 4: "Merge onto ROAD"
+    merge_match = re.search(r'merge\s+onto\s+([A-Z0-9]+)', direction, re.IGNORECASE)
+    if merge_match:
+        road = merge_match.group(1)
+        road_clean = normalize_road_name(road)
+        # Add city if mentioned
+        for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Tomball', 'Clute']:
+            if city.lower() in direction.lower():
+                return f"{road_clean}, {city}, TX"
+        return f"{road_clean}, TX"
     
     return None
 
