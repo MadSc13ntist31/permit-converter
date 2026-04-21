@@ -1,16 +1,59 @@
 #!/usr/bin/env python3
 """
-Texas OSOW Permit Route Parser
-Extracts route data from permit PDFs and generates GPS-ready waypoints
+Texas OSOW Permit Parser with Geocoding
+Converts permit roads to actual GPS coordinates
 """
 
 import re
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import sys
+import os
+import time
+import urllib.request
+import urllib.parse
+
+def geocode_location(location: str) -> Optional[Tuple[float, float]]:
+    """
+    Geocode a location to lat/long using Nominatim (free OpenStreetMap)
+    Returns (latitude, longitude) or None
+    """
+    try:
+        # Clean up the location string
+        location = location.strip()
+        
+        # Nominatim API (free, no API key needed)
+        base_url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            'q': location,
+            'format': 'json',
+            'limit': 1,
+            'countrycodes': 'us'
+        }
+        
+        url = f"{base_url}?{urllib.parse.urlencode(params)}"
+        
+        req = urllib.request.Request(url)
+        req.add_header('User-Agent', 'TexasOSOWPermitParser/1.0')
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            
+            if data and len(data) > 0:
+                lat = float(data[0]['lat'])
+                lon = float(data[0]['lon'])
+                print(f"  ✓ Geocoded: {location[:50]} → {lat:.4f}, {lon:.4f}")
+                return (lat, lon)
+            else:
+                print(f"  ✗ Could not geocode: {location[:50]}")
+                return None
+                
+    except Exception as e:
+        print(f"  ✗ Geocoding error for {location[:30]}: {str(e)}")
+        return None
 
 def extract_text_from_pdf(pdf_path: str) -> str:
-    """Extract text from PDF file"""
+    """Extract text from PDF"""
     try:
         import pypdf
         with open(pdf_path, 'rb') as file:
@@ -19,12 +62,6 @@ def extract_text_from_pdf(pdf_path: str) -> str:
             for page in reader.pages:
                 text += page.extract_text()
             return text
-    except ImportError:
-        # Fallback: use pdftotext if available
-        import subprocess
-        result = subprocess.run(['pdftotext', pdf_path, '-'], 
-                              capture_output=True, text=True)
-        return result.stdout
     except Exception as e:
         print(f"Error reading PDF: {e}")
         return ""
@@ -33,71 +70,40 @@ def parse_permit_info(text: str) -> Dict:
     """Extract basic permit information"""
     info = {}
     
-    # Extract permit number
     permit_match = re.search(r'Permit Number:\s*(\d+)', text)
     if permit_match:
         info['permit_number'] = permit_match.group(1)
     
-    # Extract origin
-    origin_match = re.search(r'Origin:\s*([^\n]+)', text)
+    origin_match = re.search(r'Origin:\s*([^\n]+?)(?:\s*Destination:|\s*Route Conditions:)', text, re.DOTALL)
     if origin_match:
         info['origin'] = origin_match.group(1).strip()
     
-    # Extract destination
     dest_match = re.search(r'Destination:\s*([^\n]+?)(?:\s*Route Conditions:|\s*Amendments:)', text, re.DOTALL)
     if dest_match:
         info['destination'] = dest_match.group(1).strip()
     
-    # Extract load dimensions
-    width_match = re.search(r"Max\.\s*Width:\s*([\d'\"]+)", text)
-    height_match = re.search(r"Max\.\s*Height:\s*([\d'\"]+)", text)
-    length_match = re.search(r"Max\.\s*Length:\s*([\d'\"]+)", text)
-    
-    if width_match:
-        info['max_width'] = width_match.group(1)
-    if height_match:
-        info['max_height'] = height_match.group(1)
-    if length_match:
-        info['max_length'] = length_match.group(1)
-    
     return info
 
 def parse_route_table(text: str) -> List[Dict]:
-    """Parse the route table from permit text"""
+    """Parse the route table from permit"""
     steps = []
     
-    # Find the route table section (starts after "Origin:" line with miles/route/to)
-    # and ends at "Final Destination:"
-    
-    # Look for the table header pattern
     table_start = text.find('Miles') + text[text.find('Miles'):].find('Route')
     if table_start == -1:
         return steps
     
-    # Find where table ends
     table_end = text.find('Final Destination:', table_start)
     if table_end == -1:
         table_end = text.find('*Permit loads', table_start)
     
     table_section = text[table_start:table_end]
-    
-    # Split into lines and parse each route entry
     lines = table_section.split('\n')
-    
-    current_miles = None
-    current_road = None
-    current_direction = None
-    current_cumulative = None
     
     for line in lines:
         line = line.strip()
         if not line or line.startswith('Miles') or line.startswith('[Loaded Route'):
             continue
         
-        # Try to parse route line - format: MILES ROAD DIRECTION DISTANCE TIME
-        # Example: "3.70 SL8NFR w Bear right onto SH249EFR nw [TOMBALLEFR] 3.70 00:05"
-        
-        # Pattern: starts with number (miles)
         match = re.match(r'^([\d<.]+)\s+([A-Z0-9]+[A-Za-z\s]*?)\s+(.*?)\s+([\d.]+)\s+\d{2}:\d{2}', line)
         
         if match:
@@ -120,266 +126,162 @@ def parse_route_table(text: str) -> List[Dict]:
     
     return steps
 
-def normalize_road_name(road: str) -> str:
-    """Convert abbreviated road names to full names"""
-    # Remove directional suffixes first
-    road = re.sub(r'\s+(nw|ne|sw|se|n|s|e|w)$', '', road, flags=re.IGNORECASE)
-    
-    # Convert abbreviations
-    road = re.sub(r'^IH', 'I-', road)
-    road = re.sub(r'^SH', 'TX-', road)
-    road = re.sub(r'^US', 'US-', road)
-    road = re.sub(r'^FM', 'FM ', road)
-    
-    # Handle frontage roads - keep them but format better for Google Maps
-    # Note: Frontage roads are REQUIRED by permit, must be in route
-    if 'WFR' in road.upper():
-        road = re.sub(r'WFR$', ' West Frontage Rd', road, flags=re.IGNORECASE)
-    elif 'EFR' in road.upper():
-        road = re.sub(r'EFR$', ' East Frontage Rd', road, flags=re.IGNORECASE)
-    elif 'NFR' in road.upper():
-        road = re.sub(r'NFR$', ' North Frontage Rd', road, flags=re.IGNORECASE)
-    elif 'SFR' in road.upper():
-        road = re.sub(r'SFR$', ' South Frontage Rd', road, flags=re.IGNORECASE)
-    
-    return road.strip()
-
-def extract_location_from_direction(direction: str, road: str) -> Optional[str]:
-    """Try to extract a usable location from direction text"""
-    # Look for city names
-    cities = ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Freeport', 
-              'Tomball', 'Rosharon', 'Alvin', 'Pearland', 'Clute', 'Galveston',
-              'Pasadena', 'Sugar Land', 'Katy', 'Spring', 'Conroe']
-    
-    for city in cities:
-        if city.lower() in direction.lower():
-            # Keep frontage roads as-is - they're required by permit
-            clean_road = normalize_road_name(road)
-            return f"{clean_road}, {city}, TX"
-    
-    # Look for highway intersections in the direction
-    highway_match = re.search(r'(IH|SH|US|FM)[\s-]?(\d+)', direction)
-    if highway_match:
-        clean_road = normalize_road_name(road)
-        # Keep frontage roads in the waypoint - they're legally required
-        return f"{clean_road}, TX"
-    
-    return None
-
-def clean_location_for_maps(location: str) -> str:
-    """Convert permit location descriptions to Google Maps-friendly addresses"""
-    
-    # Remove common permit jargon
+def clean_location_for_geocoding(location: str) -> str:
+    """Clean up location text for better geocoding"""
+    # Remove "Intersection of"
     location = location.replace('Intersection of ', '')
-    location = location.replace('in HOUSTON', ', Houston, TX')
-    location = location.replace('in LAKE JACKSON', ', Lake Jackson, TX')
-    location = location.replace('in ANGLETON', ', Angleton, TX')
+    location = location.replace('in HOUSTON', ', Houston')
+    location = location.replace('in LAKE JACKSON', ', Lake Jackson')
+    location = location.replace('in ANGLETON', ', Angleton')
     
-    # Expand common abbreviations
+    # Fix common abbreviations
     location = location.replace('&', ' and ')
     location = location.replace('sl8', 'Sam Houston Tollway')
     location = location.replace('SL8', 'Sam Houston Tollway')
-    location = location.replace('t c jester', 'TC Jester Blvd')
-    location = location.replace('T C Jester', 'TC Jester Blvd')
+    location = location.replace('t c jester', 'TC Jester Boulevard')
     
-    # Fix common street name patterns
-    location = re.sub(r'\bfm\s*(\d+)', r'FM \1', location, flags=re.IGNORECASE)
-    location = re.sub(r'\bsh\s*(\d+)', r'TX-\1', location, flags=re.IGNORECASE)
-    location = re.sub(r'\bus\s*(\d+)', r'US-\1', location, flags=re.IGNORECASE)
-    location = re.sub(r'\bih\s*(\d+)', r'I-\1', location, flags=re.IGNORECASE)
+    # Fix highway names
+    location = re.sub(r'\bSH\s*(\d+)', r'TX-\1', location)
+    location = re.sub(r'\bFM\s*(\d+)', r'FM \1', location)
+    location = re.sub(r'\bIH\s*(\d+)', r'I-\1', location)
+    location = re.sub(r'\bUS\s*(\d+)', r'US-\1', location)
     
-    # Handle distance-based locations (e.g., "1.6mi SE of SH0249 & FM1960")
-    # Convert to intersection for better Google Maps recognition
-    distance_match = re.search(r'(\d+\.?\d*)\s*mi\s+([NSEW]{1,2})\s+of\s+(.+)', location)
-    if distance_match:
-        # For now, just use the intersection part - more accurate than offset distance
-        intersection_part = distance_match.group(3)
-        location = intersection_part
-        # Clean up the intersection
-        location = location.replace('0249', '249').replace('1960', '1960')
-        location = re.sub(r'(TX-\d+)\s+and\s+(FM\s+\d+)', r'\1 & \2', location)
-    
-    # Clean up multiple spaces
-    location = re.sub(r'\s+', ' ', location).strip()
-    
-    # If no city mentioned, add TX
+    # Always add Texas
     if ', TX' not in location and 'Texas' not in location:
-        location = location + ', TX'
+        location = location + ', Texas'
     
-    return location
+    return location.strip()
 
-def extract_specific_location_from_step(step: Dict) -> Optional[str]:
-    """Extract waypoint from permit direction - use the actual turn description"""
-    direction = step['direction']
-    
-    # The direction text itself is the best waypoint - it tells you WHERE to go
-    # Examples:
-    #   "Bear right onto SH249EFR nw [TOMBALLEFR]" 
-    #   → "TX-249 Frontage Rd, Tomball, TX"
-    
-    # Pattern 1: "onto ROAD [LOCATION]" - this is a specific turn
-    onto_match = re.search(r'onto\s+([A-Z0-9]+[A-Za-z]*)\s+[nsew]{1,2}\s*\[([A-Z]+)\]', direction, re.IGNORECASE)
-    if onto_match:
-        road = onto_match.group(1)
-        location = onto_match.group(2)
-        # Clean up location - remove EFR/WFR/etc suffixes
-        location = re.sub(r'(EFR|WFR|NFR|SFR)$', '', location, flags=re.IGNORECASE)
-        # Clean up road name
-        road_clean = normalize_road_name(road)
-        location_clean = location.title()
-        return f"{road_clean}, {location_clean}, TX"
-    
-    # Pattern 2: "onto ROAD" (without location)
-    onto_simple = re.search(r'(?:onto|on)\s+([A-Z][A-Z0-9\s]+?)(?:\s+[nsew]{1,2}|$)', direction, re.IGNORECASE)
-    if onto_simple:
-        road = onto_simple.group(1).strip()
-        road_clean = normalize_road_name(road)
-        # Add any city mentioned in the direction
-        for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Tomball', 'Clute']:
-            if city.lower() in direction.lower():
-                return f"{road_clean}, {city}, TX"
-        return f"{road_clean}, TX"
-    
-    # Pattern 3: "toward DESTINATION" - use the destination
-    toward_match = re.search(r'toward\s+([A-Z][A-Za-z\s\d/\-]+?)(?:/|;|$)', direction, re.IGNORECASE)
-    if toward_match:
-        dest = toward_match.group(1).strip()
-        # If it has a slash, take first part
-        if '/' in dest:
-            dest = dest.split('/')[0].strip()
-        dest_clean = clean_location_for_maps(dest)
-        return dest_clean
-    
-    # Pattern 4: "Merge onto ROAD"
-    merge_match = re.search(r'merge\s+onto\s+([A-Z0-9]+)', direction, re.IGNORECASE)
-    if merge_match:
-        road = merge_match.group(1)
-        road_clean = normalize_road_name(road)
-        # Add city if mentioned
-        for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Tomball', 'Clute']:
-            if city.lower() in direction.lower():
-                return f"{road_clean}, {city}, TX"
-        return f"{road_clean}, TX"
-    
-    return None
-
-def add_city_context_to_waypoints(waypoints: List[str], permit_info: Dict) -> List[str]:
-    """Add city names to waypoints that don't have them for better Google Maps recognition"""
-    improved_waypoints = []
-    
-    # Determine likely cities from origin/destination
-    origin = permit_info.get('origin', '')
-    destination = permit_info.get('destination', '')
-    
-    cities_mentioned = []
-    for text in [origin, destination]:
-        for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 'Freeport', 
-                      'Tomball', 'Rosharon', 'Alvin', 'Pearland', 'Clute', 'Galveston']:
-            if city.lower() in text.lower():
-                cities_mentioned.append(city)
-    
-    # Default to first mentioned city if available
-    default_city = cities_mentioned[0] if cities_mentioned else None
-    
-    for waypoint in waypoints:
-        # If waypoint already has a city, keep it
-        if any(city in waypoint for city in ['Houston', 'Beaumont', 'Angleton', 'Lake Jackson', 
-                                               'Freeport', 'Tomball', 'Clute', 'Galveston']):
-            improved_waypoints.append(waypoint)
-        # If it's just a highway with ", TX", add city if we know it
-        elif waypoint.endswith(', TX') and default_city and not any(x in waypoint for x in ['Dr', 'St', 'Ave', 'Blvd', 'Drive', 'Street']):
-            # For highways, adding city helps Google Maps
-            waypoint_with_city = waypoint.replace(', TX', f', {default_city}, TX')
-            improved_waypoints.append(waypoint_with_city)
-        else:
-            improved_waypoints.append(waypoint)
-    
-    return improved_waypoints
-
-def generate_waypoints(permit_info: Dict, steps: List[Dict]) -> List[str]:
-    """Generate GPS waypoints from route steps - using specific turn locations"""
+def generate_geocoded_waypoints(permit_info: Dict, steps: List[Dict]) -> List[Dict]:
+    """
+    Generate waypoints with geocoded coordinates
+    Returns list of dicts with 'location', 'lat', 'lon'
+    """
     waypoints = []
     
-    # Add origin
+    print("\n🌍 Geocoding waypoints...")
+    
+    # Geocode origin
     origin = permit_info.get('origin', '')
     if origin:
-        clean_origin = clean_location_for_maps(origin)
-        waypoints.append(clean_origin)
+        clean_origin = clean_location_for_geocoding(origin)
+        coords = geocode_location(clean_origin)
+        if coords:
+            waypoints.append({
+                'location': origin,
+                'lat': coords[0],
+                'lon': coords[1]
+            })
+        time.sleep(1)  # Rate limiting - be nice to free API
     
-    # Extract specific locations from each turn/direction change
-    for step in steps:
-        # Skip "arrive at destination" steps
+    # Geocode key turns (not every single step - too many)
+    # Focus on major highway changes
+    last_road_type = None
+    
+    for i, step in enumerate(steps):
+        # Skip last step (arrival)
         if 'arrive' in step['direction'].lower():
             continue
         
-        # Get specific location from this step
-        location = extract_specific_location_from_step(step)
+        road = step['road']
+        direction = step['direction']
         
-        if location:
-            # Avoid duplicate consecutive waypoints
-            if not waypoints or location != waypoints[-1]:
-                waypoints.append(location)
+        # Identify road type (highway, frontage, etc)
+        road_type = None
+        if any(x in road.upper() for x in ['IH', 'US', 'SH']):
+            road_type = 'highway'
+        elif 'FM' in road.upper():
+            road_type = 'fm'
+        
+        # Only geocode when changing road types or major turns
+        if road_type != last_road_type or i % 3 == 0:  # Every 3rd step or road type change
+            # Extract target location from direction
+            target = None
+            
+            # Look for "onto X"
+            onto_match = re.search(r'onto\s+([A-Z][A-Za-z0-9\s]+?)(?:\s+[nsew]{1,2}|\s*\[|$)', direction, re.IGNORECASE)
+            if onto_match:
+                target = onto_match.group(1).strip()
+                # If there's a location in brackets, use it
+                loc_match = re.search(r'\[([A-Z]+)\]', direction)
+                if loc_match:
+                    place = loc_match.group(1)
+                    # Clean up place name
+                    place = re.sub(r'(EFR|WFR|NFR|SFR)$', '', place, flags=re.IGNORECASE)
+                    target = f"{target}, {place}, Texas"
+                else:
+                    target = f"{target}, Texas"
+            
+            # Look for "toward X"
+            if not target:
+                toward_match = re.search(r'toward\s+([A-Za-z][A-Za-z0-9\s/\-]+)', direction, re.IGNORECASE)
+                if toward_match:
+                    target = toward_match.group(1).strip()
+                    if '/' in target:
+                        target = target.split('/')[0].strip()
+                    target = f"{target}, Texas"
+            
+            if target:
+                target_clean = clean_location_for_geocoding(target)
+                coords = geocode_location(target_clean)
+                if coords:
+                    waypoints.append({
+                        'location': target,
+                        'lat': coords[0],
+                        'lon': coords[1]
+                    })
+                time.sleep(1)  # Rate limiting
+        
+        last_road_type = road_type
     
-    # Add destination
+    # Geocode destination
     destination = permit_info.get('destination', '')
     if destination:
-        clean_dest = clean_location_for_maps(destination)
-        waypoints.append(clean_dest)
+        clean_dest = clean_location_for_geocoding(destination)
+        coords = geocode_location(clean_dest)
+        if coords:
+            waypoints.append({
+                'location': destination,
+                'lat': coords[0],
+                'lon': coords[1]
+            })
     
-    # Add city context to improve Google Maps recognition
-    waypoints = add_city_context_to_waypoints(waypoints, permit_info)
-    
-    # Google Maps has a 10 waypoint limit (9 waypoints + origin + destination = 11 total points)
-    # So we can use 9 intermediate waypoints
-    if len(waypoints) > 11:
+    # Limit to 10 waypoints for Google Maps
+    if len(waypoints) > 10:
+        # Keep first, last, and evenly distribute middle
         first = waypoints[0]
         last = waypoints[-1]
         middle = waypoints[1:-1]
-        
-        # Keep evenly distributed waypoints
-        step_size = max(1, len(middle) // 9)
-        selected_middle = [middle[i] for i in range(0, len(middle), step_size)][:9]
-        
+        step_size = max(1, len(middle) // 8)
+        selected_middle = [middle[i] for i in range(0, len(middle), step_size)][:8]
         waypoints = [first] + selected_middle + [last]
     
     return waypoints
 
-def generate_google_maps_url(waypoints: List[str]) -> str:
-    """Generate Google Maps URL with waypoints"""
+def generate_google_maps_url_with_coords(waypoints: List[Dict]) -> str:
+    """Generate Google Maps URL using lat/long coordinates"""
     if len(waypoints) < 2:
         return ""
     
-    from urllib.parse import quote
-    
-    origin = quote(waypoints[0])
-    destination = quote(waypoints[-1])
+    # Google Maps URL with coordinates: lat,lon
+    origin = f"{waypoints[0]['lat']},{waypoints[0]['lon']}"
+    destination = f"{waypoints[-1]['lat']},{waypoints[-1]['lon']}"
     
     if len(waypoints) > 2:
-        waypoint_str = '|'.join([quote(w) for w in waypoints[1:-1]])
+        # Waypoints as lat,lon pairs
+        waypoint_coords = [f"{wp['lat']},{wp['lon']}" for wp in waypoints[1:-1]]
+        waypoint_str = '|'.join(waypoint_coords)
         url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}&waypoints={waypoint_str}&travelmode=driving"
     else:
         url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}&travelmode=driving"
     
     return url
 
-def generate_apple_maps_url(waypoints: List[str]) -> str:
-    """Generate Apple Maps URL"""
-    if len(waypoints) < 2:
-        return ""
-    
-    from urllib.parse import quote
-    origin = quote(waypoints[0])
-    destination = quote(waypoints[-1])
-    
-    return f"http://maps.apple.com/?saddr={origin}&daddr={destination}"
-
 def parse_permit(pdf_path: str) -> Dict:
-    """Main function to parse permit and return structured data"""
+    """Main parsing function with geocoding"""
     print(f"📄 Reading permit: {pdf_path}")
     
-    # Extract text
     text = extract_text_from_pdf(pdf_path)
-    
     if not text:
         return {"error": "Could not extract text from PDF"}
     
@@ -399,53 +301,52 @@ def parse_permit(pdf_path: str) -> Dict:
         total_miles = steps[-1]['cumulative']
         print(f"  Total distance: {total_miles} miles")
     
-    # Generate waypoints
-    waypoints = generate_waypoints(permit_info, steps)
-    print(f"✓ Generated {len(waypoints)} GPS waypoints")
+    # Generate geocoded waypoints
+    waypoints = generate_geocoded_waypoints(permit_info, steps)
+    print(f"\n✓ Geocoded {len(waypoints)} waypoints successfully")
     
-    # Generate URLs
-    google_url = generate_google_maps_url(waypoints)
-    apple_url = generate_apple_maps_url(waypoints)
+    # Generate Google Maps URL
+    google_url = generate_google_maps_url_with_coords(waypoints)
     
     result = {
         'permit_info': permit_info,
         'steps': steps,
         'waypoints': waypoints,
-        'google_maps_url': google_url,
-        'apple_maps_url': apple_url
+        'google_maps_url': google_url
     }
     
     return result
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python parse_permit.py <permit.pdf>")
+        print("Usage: python parse_permit_geocoded.py <permit.pdf>")
         sys.exit(1)
     
     pdf_path = sys.argv[1]
     result = parse_permit(pdf_path)
     
+    if 'error' in result:
+        print(f"\n❌ Error: {result['error']}")
+        sys.exit(1)
+    
     print("\n" + "="*80)
-    print("📍 GPS LINKS:")
+    print("📍 GPS LINK (with coordinates):")
     print("="*80)
     print(f"\n🗺️  Google Maps:\n{result['google_maps_url']}\n")
-    print(f"🍎 Apple Maps:\n{result['apple_maps_url']}\n")
     
     print("\n" + "="*80)
-    print("🛣️  ROUTE STEPS:")
+    print("🗺️  GEOCODED WAYPOINTS:")
     print("="*80)
-    for i, step in enumerate(result['steps'], 1):
-        print(f"\n{i}. {step['road']}")
-        print(f"   {step['direction']}")
-        print(f"   {step['miles']} miles (total: {step['cumulative']} miles)")
+    for i, wp in enumerate(result['waypoints'], 1):
+        print(f"{i}. {wp['location'][:60]}")
+        print(f"   → {wp['lat']:.6f}, {wp['lon']:.6f}")
     
     # Save to JSON
-    import os
-    filename = os.path.basename(pdf_path).replace('.pdf', '_route.json')
-    output_file = os.path.join('/home/claude', filename)
-    with open(output_file, 'w') as f:
+    output_file = os.path.basename(pdf_path).replace('.pdf', '_geocoded.json')
+    output_path = os.path.join('/home/claude', output_file)
+    with open(output_path, 'w') as f:
         json.dump(result, f, indent=2)
-    print(f"\n💾 Saved route data to: {output_file}")
+    print(f"\n💾 Saved to: {output_path}")
 
 if __name__ == "__main__":
     main()
