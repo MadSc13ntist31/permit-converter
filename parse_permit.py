@@ -97,14 +97,28 @@ def parse_route_table(text: str) -> List[Dict]:
 
 def generate_txdmv_urls(permit_number: str) -> Dict[str, str]:
     """
-    Generate URLs to official TxDMV permit page
-    This is what the QR code links to!
+    Generate URLs to official TxDMV permit page (from QR code)
+    
+    Pattern discovered:
+    - Full permit: 260406820529 (12 digits: YYMMDD + 6-digit ID)
+    - QR URL uses: PermitID=14820529 (8 digits: "14" prefix + last 6 digits)
+    
+    Example: 260406820529 → https://txpros.txdmv.gov/PermitDetails02.aspx?PermitID=14820529&QRUSER=1
     """
-    base_url = "https://webdealer.txdmv.gov/ccos/showPermit"
+    # Extract last 6 digits and add "14" prefix
+    if len(permit_number) >= 6:
+        last_six = permit_number[-6:]
+        permit_id = "14" + last_six
+    else:
+        # Unusual format - use as-is
+        permit_id = permit_number
+    
+    base_url = "https://txpros.txdmv.gov/PermitDetails02.aspx"
+    permit_url = f"{base_url}?PermitID={permit_id}&QRUSER=1"
     
     return {
-        'txdmv_permit_url': f"{base_url}?permitId={permit_number}",
-        'txdmv_map_url': f"{base_url}?permitId={permit_number}#route",  # Direct link to route tab
+        'txdmv_permit_url': permit_url,
+        'txdmv_map_url': permit_url,  # Same URL - page has tabs for details/route/map
     }
 
 def parse_permit(pdf_path: str) -> Dict:
